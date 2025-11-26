@@ -1,4 +1,4 @@
-# PiCar-X: Sistema de Autoconducción con Detección de Señales de Tráfico
+# PROTOTIPO DE ROBOT CON MOVILIDAD AUTÓNOMA MEDIANTE DETECCIÓN DE SEñALES DEL ENTORNO
 
 Sistema de autoconducción autónoma para el robot PiCar-X que utiliza visión por computadora y aprendizaje profundo para detectar y responder a señales de tráfico en tiempo real.
 
