@@ -1,8 +1,8 @@
-# 🚗 PiCar-X: Sistema de Autoconducción con Detección de Señales de Tráfico
+# PiCar-X: Sistema de Autoconducción con Detección de Señales de Tráfico
 
 Sistema de autoconducción autónoma para el robot PiCar-X que utiliza visión por computadora y aprendizaje profundo para detectar y responder a señales de tráfico en tiempo real.
 
-## 📋 Descripción
+## Descripción
 
 Este proyecto implementa un sistema completo de autoconducción que combina:
 - **Detección de señales de tráfico** mediante un modelo TensorFlow Lite (TFLite)
@@ -12,9 +12,9 @@ Este proyecto implementa un sistema completo de autoconducción que combina:
 
 El sistema procesa el video de la cámara del robot, detecta señales de tráfico, y ejecuta acciones de movimiento correspondientes (avanzar, detenerse, girar, ajustar velocidad) mientras monitorea la proximidad de obstáculos para garantizar la seguridad.
 
-## ✨ Características Principales
+## Características Principales
 
-### 🎯 Detección de Señales
+### Detección de Señales
 - **9 clases de señales detectadas:**
   - `STOP` - Detención completa
   - `SIGA` - Avanzar recto
@@ -26,19 +26,19 @@ El sistema procesa el video de la cámara del robot, detecta señales de tráfic
   - `VEL MÁX 30 KM/H` - Limitación de velocidad a 30 km/h
   - `FONDO` - Ignorado (no genera acción)
 
-### 🤖 Control Autónomo
+### Control Autónomo
 - **Sistema de decisión inteligente:** Selecciona la señal con mayor confianza (excluyendo fondo)
 - **Control de velocidad adaptativo:** Ajusta la velocidad según la señal detectada
 - **Gestión de giros:** Manejo automático de giros suaves y retornos en U
 - **Cooldown de comandos:** Evita comandos repetidos muy seguidos
 
-### 🛡️ Sistema de Seguridad
+### Sistema de Seguridad
 - **Detección de obstáculos:** Sensor ultrasónico integrado del PiCar-X
 - **Frenado de emergencia:** Detención automática cuando detecta obstáculos cercanos (< 25 cm)
 - **Reducción preventiva de velocidad:** Disminuye velocidad cuando detecta obstáculos a distancia media (40 cm)
 - **Liberación automática:** Reanuda el movimiento cuando el camino está despejado (> 45 cm)
 
-### 🌐 Interfaz Web
+### Interfaz Web
 - **Streaming de video en vivo:** Visualización en tiempo real de la cámara con detecciones superpuestas
 - **Panel de información:** Muestra la señal actual detectada, confianza y timestamp
 - **Historial de detecciones:** Registro de las últimas 6 señales detectadas
@@ -46,7 +46,7 @@ El sistema procesa el video de la cámara del robot, detecta señales de tráfic
 - **Indicadores de estado:** Banner de emergencia y estado del control en tiempo real
 - **Diseño responsive:** Interfaz moderna y adaptable a diferentes tamaños de pantalla
 
-## 🛠️ Tecnologías Utilizadas
+## Tecnologías Utilizadas
 
 - **Backend:**
   - Python 3.x
@@ -67,7 +67,7 @@ El sistema procesa el video de la cámara del robot, detecta señales de tráfic
   - Cámara Raspberry Pi (Picamera2) o cámara USB (OpenCV)
   - Sensor ultrasónico integrado
 
-## 📦 Requisitos
+## Requisitos
 
 ### Hardware
 - Raspberry Pi (recomendado) o sistema compatible
@@ -90,7 +90,7 @@ picarx          # Librería de control PiCar-X
 picamera2       # Para cámara Raspberry Pi (opcional)
 ```
 
-## 🚀 Instalación
+## Instalación
 
 1. **Clonar o descargar el repositorio:**
 ```bash
@@ -120,7 +120,7 @@ pip install tensorflow
    - Conecta el PiCar-X según las instrucciones del fabricante
    - Verifica que la cámara esté funcionando correctamente
 
-## 📖 Uso
+## Uso
 
 ### Iniciar el servidor
 
@@ -157,7 +157,7 @@ http://[IP_DE_LA_RASPBERRY_PI]:8000
    - Consulta el historial de detecciones recientes
    - Monitorea el estado de emergencia y proximidad de obstáculos
 
-## 🏗️ Estructura del Proyecto
+## Estructura del Proyecto
 
 ```
 TESIS/
@@ -168,7 +168,7 @@ TESIS/
 └── README.md             # Este archivo
 ```
 
-## ⚙️ Configuración
+## Configuración
 
 ### Parámetros de Detección
 ```python
@@ -201,14 +201,14 @@ UTURN_ANGLE = 35         # Ángulo de giro para retorno en U (grados)
 UTURN_TIME = 0.9         # Tiempo de giro para retorno (segundos)
 ```
 
-## 🔧 Modo Simulación
+## Modo Simulación
 
 El sistema puede funcionar en modo simulación si no se detecta el hardware PiCar-X:
 - Las acciones se registran en consola pero no se ejecutan físicamente
 - La detección de señales sigue funcionando normalmente
 - Útil para desarrollo y pruebas sin hardware
 
-## 📡 API Endpoints
+## API Endpoints
 
 - `GET /` - Interfaz web principal
 - `GET /video_feed` - Stream de video MJPEG en tiempo real
@@ -216,7 +216,7 @@ El sistema puede funcionar en modo simulación si no se detecta el hardware PiCa
 - `POST /control/start` - Activa la autoconducción
 - `POST /control/stop` - Detiene el robot y desactiva autoconducción
 
-## 🔍 Funcionamiento Técnico
+## Funcionamiento Técnico
 
 1. **Captura de video:** El sistema captura frames de la cámara (Picamera2 o OpenCV)
 2. **Preprocesamiento:** Cada frame se redimensiona a 320x320 y normaliza
@@ -227,14 +227,14 @@ El sistema puede funcionar en modo simulación si no se detecta el hardware PiCa
 7. **Seguridad:** Se verifica la distancia de obstáculos en cada frame
 8. **Actualización:** La interfaz web se actualiza con la información más reciente
 
-## ⚠️ Notas de Seguridad
+##  Notas de Seguridad
 
 - **Siempre supervisa el robot** durante la operación
 - El sistema tiene protecciones de seguridad, pero no reemplaza la supervisión humana
 - Asegúrate de tener espacio suficiente para las maniobras del robot
 - Verifica que el sensor ultrasónico esté funcionando correctamente antes de usar la autoconducción
 
-## 🐛 Solución de Problemas
+##  Solución de Problemas
 
 ### El modelo no se carga
 - Verifica que `best-fp16.tflite` esté en el directorio raíz
@@ -255,21 +255,16 @@ El sistema puede funcionar en modo simulación si no se detecta el hardware PiCa
 - Ajusta `CONF_THRESH` si las detecciones son demasiado estrictas o permisivas
 - Asegúrate de que la iluminación sea adecuada
 
-## 📝 Licencia
 
-Este proyecto es parte de una tesis de investigación. Consulta con el autor para más información sobre el uso y distribución.
+## Autores
 
-## 👤 Autor
+Proyecto desarrollado como parte de una tesis de investigación por parte de Bairon Sanhueza y Juan Yañez
 
-Proyecto desarrollado como parte de una tesis de investigación.
+##  Agradecimientos
 
-## 🙏 Agradecimientos
-
-- SunFounder por el hardware PiCar-X
-- TensorFlow por el framework de aprendizaje profundo
-- Comunidad de código abierto por las librerías utilizadas
+- Profesor Cristian Vidal por guiarnos en este proyecto
 
 ---
 
-**⚠️ Importante:** Este sistema está diseñado para uso educativo y de investigación. Úsalo con precaución y siempre bajo supervisión.
+** Importante:** Este sistema está diseñado para uso educativo y de investigación. Úsalo con precaución y siempre bajo supervisión.
 
