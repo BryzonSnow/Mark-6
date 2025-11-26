@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>PiCar-X - Panel de Señales</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Bootstrap -->
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+  />
+
+  <style>
+    :root {
+      --bg-main: #020617;
+      --bg-card: #0b1220;
+      --border-soft: #1f2937;
+      --text-main: #e5e7eb;
+      --text-muted: #9ca3af;
+      --accent: #38bdf8;
+      --danger: #f97373;
+      --success: #4ade80;
+      --warning: #facc15;
+    }
+
+    body {
+      background: radial-gradient(circle at top, #111827 0, #020617 55%);
+      color: var(--text-main);
+      min-height: 100vh;
+    }
+
+    .app-shell {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    .app-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .app-header h1 {
+      font-size: 1.6rem;
+      margin: 0;
+    }
+
+    .chip {
+      border-radius: 999px;
+      border: 1px solid var(--border-soft);
+      padding: 4px 12px;
+      font-size: .8rem;
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(15, 23, 42, 0.8);
+    }
+
+    .chip-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.9);
+    }
+
+    .panel-main {
+      display: grid;
+      grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+      gap: 16px;
+    }
+
+    @media (max-width: 900px) {
+      .panel-main {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card-shell {
+      background: rgba(15, 23, 42, 0.95);
+      border-radius: 16px;
+      border: 1px solid var(--border-soft);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+    }
+
+    .card-shell-header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-soft);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-shell-header h2 {
+      font-size: 1rem;
+      margin: 0;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .card-shell-body {
+      padding: 10px 14px 14px;
+    }
+
+    .video-frame {
+      width: 100%;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #000;
+      border: 1px solid #111827;
+    }
+
+    .video-frame img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .signal-tag {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      gap: 6px;
+    }
+
+    .signal-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+    }
+
+    .signal-dot-stop {
+      background: var(--danger);
+      box-shadow: 0 0 8px rgba(248, 113, 113, 0.8);
+    }
+
+    .signal-dot-go {
+      background: var(--success);
+      box-shadow: 0 0 8px rgba(74, 222, 128, 0.8);
+    }
+
+    .signal-dot-turn {
+      background: var(--accent);
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.9);
+    }
+
+    .signal-dot-speed {
+      background: var(--warning);
+      box-shadow: 0 0 8px rgba(250, 204, 21, 0.9);
+    }
+
+    .signal-main-label {
+      font-size: 1.2rem;
+      font-weight: 600;
+    }
+
+    .signal-badge-id {
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.8rem;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-soft);
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text-muted);
+    }
+
+    .signal-confidence {
+      font-weight: 500;
+    }
+
+    .status-pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 0.75rem;
+      border: 1px solid var(--border-soft);
+      color: var(--text-muted);
+    }
+
+    .status-pill-strong {
+      color: var(--accent);
+      border-color: rgba(56, 189, 248, 0.6);
+    }
+
+    .list-history {
+      max-height: 180px;
+      overflow-y: auto;
+      margin: 0;
+      padding-left: 0;
+      list-style: none;
+      font-size: 0.82rem;
+    }
+
+    .list-history li {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+      border-bottom: 1px dotted rgba(55, 65, 81, 0.7);
+    }
+
+    .list-history li:last-child {
+      border-bottom: none;
+    }
+
+    .log-label {
+      color: var(--text-muted);
+    }
+
+    .log-right {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .ts-chip {
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: rgba(31, 41, 55, 0.9);
+      color: var(--text-muted);
+    }
+
+    .conf-chip {
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: rgba(22, 163, 74, 0.16);
+      color: var(--success);
+    }
+
+    .footer-note {
+      text-align: right;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    /* Banner de emergencia */
+    .emergency-banner {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 12px;
+      background: rgba(248, 113, 113, 0.12);
+      border: 1px solid rgba(248, 113, 113, 0.6);
+      color: var(--danger);
+      font-size: 0.85rem;
+      margin-bottom: 8px;
+    }
+
+    .emergency-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--danger);
+      box-shadow: 0 0 10px rgba(248, 113, 113, 0.9);
+    }
+
+    .emergency-text-main {
+      font-weight: 600;
+    }
+
+    .distance-info {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* Botones de control */
+    .control-buttons {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Header -->
+    <div class="app-header">
+      <div>
+        <h1>PiCar-X · Detección de Señales</h1>
+        <p class="mb-0 text-secondary" style="font-size: 0.85rem;">
+          Modelo TFLite (clases 0–8, ignorando fondo). La señal con mayor confianza controla al robot.
+        </p>
+      </div>
+      <div class="control-buttons">
+        <div class="chip">
+          <span class="chip-dot"></span>
+          <span>Streaming en vivo</span>
+        </div>
+        <button id="btn-start-auto" class="btn btn-sm btn-success">
+          Iniciar autoconducción
+        </button>
+        <button id="btn-stop-auto" class="btn btn-sm btn-danger">
+          STOP inmediato
+        </button>
+      </div>
+    </div>
+
+    <!-- Main panel -->
+    <div class="panel-main">
+      <!-- Video -->
+      <div class="card-shell">
+        <div class="card-shell-header">
+          <h2>VISOR DE CÁMARA</h2>
+          <span class="status-pill">
+            Endpoint:
+            <span class="text-info">/video_feed</span>
+          </span>
+        </div>
+        <div class="card-shell-body">
+          <div class="video-frame mb-2">
+            <img
+              id="video-stream"
+              src="{{ url_for('video_feed') }}"
+              alt="Video en vivo"
+            />
+          </div>
+          <p class="footer-note mb-0">
+            Consejo: coloca el robot en la ruta, luego inicia la autoconducción. El sistema siempre tomará la señal de mayor confianza (≠ fondo).
+          </p>
+        </div>
+      </div>
+
+      <!-- Info panel -->
+      <div class="d-flex flex-column gap-3">
+        <!-- Banner de emergencia -->
+        <div id="emergency-banner" class="emergency-banner">
+          <span class="emergency-dot"></span>
+          <div>
+            <div class="emergency-text-main" id="emergency-text-main">
+              Obstáculo detectado. Robot detenido.
+            </div>
+            <div class="distance-info" id="emergency-distance">
+              Distancia aproximada: —
+            </div>
+          </div>
+        </div>
+
+        <!-- Señal actual -->
+        <div class="card-shell">
+          <div class="card-shell-header">
+            <h2>SEÑAL ACTUAL</h2>
+            <span id="status-pill" class="status-pill status-pill-strong">
+              Esperando detección...
+            </span>
+          </div>
+          <div class="card-shell-body">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <div>
+                <div class="signal-tag mb-1" id="signal-tag">
+                  <span class="signal-dot signal-dot-stop" id="signal-dot"></span>
+                  <span id="signal-type-text">SIN SEÑAL</span>
+                </div>
+                <div class="signal-main-label" id="last-label">
+                  (sin detección)
+                </div>
+              </div>
+              <div class="text-end">
+                <div class="signal-badge-id mb-1">
+                  ID: <span id="last-id">-</span>
+                </div>
+                <div class="signal-confidence">
+                  Confianza:
+                  <span id="last-conf">-</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="small text-muted">
+              Última actualización:
+              <span id="last-ts">-</span>
+            </div>
+
+            <!-- Info de proximidad cuando NO está en emergencia -->
+            <div class="distance-info" id="distance-info">
+              <!-- Se rellena por JS -->
+            </div>
+
+            <!-- Estado del control -->
+            <div class="distance-info" id="control-status-info">
+              <!-- Se rellena por JS -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Historial -->
+        <div class="card-shell">
+          <div class="card-shell-header">
+            <h2>HISTORIAL RECIENTE</h2>
+            <span class="status-pill">
+              Máx. <span id="history-max">6</span> eventos
+            </span>
+          </div>
+          <div class="card-shell-body">
+            <ul class="list-history" id="history-list">
+              <!-- Se llena via JS -->
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const HISTORY_LIMIT = 6;
+    const historyList = [];
+    const elLabel = document.getElementById("last-label");
+    const elId = document.getElementById("last-id");
+    const elConf = document.getElementById("last-conf");
+    const elTs = document.getElementById("last-ts");
+    const elSignalTypeText = document.getElementById("signal-type-text");
+    const elSignalDot = document.getElementById("signal-dot");
+    const elStatusPill = document.getElementById("status-pill");
+    const elHistoryList = document.getElementById("history-list");
+    const elHistoryMax = document.getElementById("history-max");
+    const elEmergencyBanner = document.getElementById("emergency-banner");
+    const elEmergencyTextMain = document.getElementById("emergency-text-main");
+    const elEmergencyDistance = document.getElementById("emergency-distance");
+    const elDistanceInfo = document.getElementById("distance-info");
+    const elControlStatusInfo = document.getElementById("control-status-info");
+    const btnStartAuto = document.getElementById("btn-start-auto");
+    const btnStopAuto = document.getElementById("btn-stop-auto");
+
+    elHistoryMax.textContent = HISTORY_LIMIT;
+
+    function classifySignalType(label) {
+      if (!label) return "none";
+
+      const lower = label.toLowerCase();
+
+      if (lower.includes("stop")) return "stop";
+      if (lower.includes("siga")) return "go";
+      if (lower.includes("girar") || lower.includes("giro")) return "turn";
+      if (lower.includes("vel") || lower.includes("km")) return "speed";
+      if (lower.includes("ceda")) return "yield";
+      if (lower.includes("retorno") || lower.includes("u")) return "turn";
+
+      return "other";
+    }
+
+    function updateSignalDot(type) {
+      elSignalDot.className = "signal-dot";
+
+      if (type === "stop") {
+        elSignalDot.classList.add("signal-dot-stop");
+        elSignalTypeText.textContent = "SEÑAL DE DETENCIÓN";
+      } else if (type === "go") {
+        elSignalDot.classList.add("signal-dot-go");
+        elSignalTypeText.textContent = "SEÑAL DE AVANCE";
+      } else if (type === "turn") {
+        elSignalDot.classList.add("signal-dot-turn");
+        elSignalTypeText.textContent = "SEÑAL DE GIRO / RETORNO";
+      } else if (type === "speed") {
+        elSignalDot.classList.add("signal-dot-speed");
+        elSignalTypeText.textContent = "SEÑAL DE VELOCIDAD";
+      } else {
+        elSignalDot.classList.add("signal-dot-stop");
+        elSignalTypeText.textContent = "SIN SEÑAL / FONDO";
+      }
+    }
+
+    function addToHistory(item) {
+      historyList.unshift(item);
+      if (historyList.length > HISTORY_LIMIT) {
+        historyList.pop();
+      }
+      renderHistory();
+    }
+
+    function renderHistory() {
+      elHistoryList.innerHTML = "";
+
+      if (historyList.length === 0) {
+        const li = document.createElement("li");
+        li.innerHTML = `<span class="log-label text-muted">Sin detecciones aún...</span>`;
+        elHistoryList.appendChild(li);
+        return;
+      }
+
+      historyList.forEach((det) => {
+        const li = document.createElement("li");
+
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "log-label";
+        labelSpan.textContent = `${det.label} (ID ${det.cls_id})`;
+
+        const rightDiv = document.createElement("div");
+        rightDiv.className = "log-right";
+
+        const confSpan = document.createElement("span");
+        confSpan.className = "conf-chip";
+        confSpan.textContent = det.confidence.toFixed(2);
+
+        const tsSpan = document.createElement("span");
+        tsSpan.className = "ts-chip";
+        tsSpan.textContent = det.timeStr;
+
+        rightDiv.appendChild(confSpan);
+        rightDiv.appendChild(tsSpan);
+
+        li.appendChild(labelSpan);
+        li.appendChild(rightDiv);
+
+        elHistoryList.appendChild(li);
+      });
+    }
+
+    function updateEmergencyUI(emergency, distance, controlStatus) {
+      if (emergency) {
+        // Mostrar banner rojo
+        elEmergencyBanner.style.display = "flex";
+        elEmergencyTextMain.textContent = "Obstáculo detectado. Robot detenido por seguridad.";
+        if (typeof distance === "number") {
+          elEmergencyDistance.textContent = `Distancia aproximada: ${distance.toFixed(1)} cm`;
+        } else {
+          elEmergencyDistance.textContent = "Distancia aproximada: sin lectura";
+        }
+
+        // Estado de proximidad debajo de la señal
+        elDistanceInfo.textContent = "";
+      } else {
+        // Ocultar banner si no hay emergencia
+        elEmergencyBanner.style.display = "none";
+
+        // Mostrar info suave de obstáculo si hay lectura
+        if (typeof distance === "number") {
+          elDistanceInfo.textContent = `Obstáculo detectado a ${distance.toFixed(1)} cm (sin emergencia).`;
+        } else {
+          elDistanceInfo.textContent = "";
+        }
+      }
+
+      // Mostrar estado del control si viene desde el backend
+      if (controlStatus) {
+        elControlStatusInfo.textContent = `Estado del control: ${controlStatus}`;
+      } else {
+        elControlStatusInfo.textContent = "";
+      }
+    }
+
+    function updateAutoDriveButtons(autoEnabled) {
+      if (autoEnabled) {
+        btnStartAuto.disabled = true;
+        btnStopAuto.disabled = false;
+        btnStartAuto.textContent = "Autoconducción activa";
+      } else {
+        btnStartAuto.disabled = false;
+        btnStopAuto.disabled = false;
+        btnStartAuto.textContent = "Iniciar autoconducción";
+      }
+    }
+
+    async function fetchLastDetection() {
+      try {
+        const res = await fetch("/last_detection");
+        const data = await res.json();
+
+        const obst = data.obstacle_distance_cm;
+        const emergency = data.emergency_stop;
+        const controlStatus = data.control_status;
+        const autoEnabled = data.auto_drive_enabled;
+
+        // Actualizar estado de botones
+        updateAutoDriveButtons(!!autoEnabled);
+
+        if (data && data.cls_id !== null) {
+          // Actualizar panel principal
+          elLabel.textContent = data.label;
+          elId.textContent = data.cls_id;
+          elConf.textContent = (data.confidence || 0).toFixed(2);
+
+          const ts = data.timestamp
+            ? new Date(data.timestamp * 1000)
+            : null;
+
+          elTs.textContent = ts
+            ? ts.toLocaleTimeString()
+            : "-";
+
+          let statusText = "Detección activa";
+          if (autoEnabled) statusText += " · Autoconducción ON";
+          else statusText += " · Autoconducción OFF";
+
+          elStatusPill.textContent = statusText;
+          elStatusPill.classList.add("status-pill-strong");
+
+          const type = classifySignalType(data.label);
+          updateSignalDot(type);
+
+          // Guardar en historial
+          addToHistory({
+            cls_id: data.cls_id,
+            label: data.label,
+            confidence: data.confidence || 0,
+            timeStr: ts ? ts.toLocaleTimeString() : "-",
+          });
+        } else {
+          // Sin detección
+          elLabel.textContent = "(sin detección)";
+          elId.textContent = "-";
+          elConf.textContent = "-";
+          elTs.textContent = "-";
+          let statusText = "Esperando detección";
+          if (autoEnabled) statusText += " · Autoconducción ON";
+          else statusText += " · Autoconducción OFF";
+          elStatusPill.textContent = statusText;
+          elStatusPill.classList.add("status-pill-strong");
+          updateSignalDot("none");
+        }
+
+        // Actualizar UI de proximidad / emergencia
+        updateEmergencyUI(emergency, obst, controlStatus);
+      } catch (err) {
+        console.error("Error consultando /last_detection:", err);
+        elStatusPill.textContent = "Error consultando API";
+        elStatusPill.classList.remove("status-pill-strong");
+        // En error, ocultamos banner para no confundir
+        elEmergencyBanner.style.display = "none";
+      }
+    }
+
+    async function sendControl(action) {
+      try {
+        await fetch(`/control/${action}`, { method: "POST" });
+        // Forzamos refresh de estado después de pulsar botón
+        fetchLastDetection();
+      } catch (err) {
+        console.error("Error enviando control:", err);
+      }
+    }
+
+    btnStartAuto.addEventListener("click", () => {
+      sendControl("start");
+    });
+
+    btnStopAuto.addEventListener("click", () => {
+      sendControl("stop");
+    });
+
+    setInterval(fetchLastDetection, 600);
+    fetchLastDetection();
+  </script>
+</body>
+</html>
