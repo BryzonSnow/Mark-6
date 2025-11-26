@@ -2,7 +2,7 @@
 
 Sistema de autoconducción autónoma para el robot PiCar-X que utiliza visión por computadora y aprendizaje profundo para detectar y responder a señales de tráfico en tiempo real.
 
-Dataset utilizado para el entremineto del modelo --https://drive.google.com/drive/folders/1-gwJeVUa1F5qXNyl9UZSgOAQm1FCFaE3?usp=sharing
+Dataset utilizado para el entrenamiento del modelo --https://drive.google.com/drive/folders/1-gwJeVUa1F5qXNyl9UZSgOAQm1FCFaE3?usp=sharing
 
 ## Descripción
 
