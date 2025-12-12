@@ -1,9 +1,11 @@
 import os
 import time
+import threading
+import queue
 
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify, render_template
+from flask import Flask, Response, jsonify, render_template, request
 
 # ==========================
 #   CONFIGURACIÓN GENERAL
@@ -13,6 +15,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TFLITE_MODEL_PATH = os.path.join(BASE_DIR, "best-fp16.tflite")
 
 app = Flask(__name__)
+
+# Detectar solo en 1 de cada N frames (reduce carga de CPU)
+DETECT_EVERY_N = 1  # prueba 2; si sigue pesado, 3
 
 # ==========================
 #   HARDWARE: PiCar-X
@@ -51,19 +56,12 @@ interpreter = None
 input_details = None
 output_details = None
 INPUT_W, INPUT_H = 320, 320
-CONF_THRESH = 0.45
-IOU_THRESH = 0.45
+
+# Umbrales de confianza
+CONF_THRESH = 0.45         # umbral general
+CONF_THRESH_LEFT = 0.30    # umbral más bajo solo para GIRO IZQUIERDA
 
 # Clases 0 a 8:
-# 0=STOP
-# 1=SIGA
-# 2=GIRAR DERECHA
-# 3=GIRAR IZQUIERDA
-# 4=FONDO
-# 5=CEDA EL PASO
-# 6=RETONO (GIRO EN U)
-# 7=VEL. MÁX 10 KM/H
-# 8=VEL. MÁX 30 KM/H
 CLASS_NAMES = [
     "STOP",                       # 0
     "SIGA",                       # 1
@@ -78,20 +76,6 @@ CLASS_NAMES = [
 
 BACKGROUND_CLASS_ID = 4  # FONDO
 
-# ==========================
-#   CONFIG MOVIMIENTO + PROXIMIDAD
-# ==========================
-
-SPEED_STOP = 0
-SPEED_SLOW = 10      # aprox. "10 km/h"
-SPEED_30 = 20        # aprox. "30 km/h"
-SPEED_NORMAL = 30    # velocidad "crucero"
-SPEED_MAX = 40       # límite superior
-
-TURN_ANGLE = 25      # grados giro normal
-UTURN_ANGLE = 35     # grados giro fuerte
-UTURN_TIME = 0.9     # segundos de giro para U
-
 CLASS_STOP = 0
 CLASS_GO_STRAIGHT = 1
 CLASS_TURN_RIGHT = 2
@@ -102,25 +86,52 @@ CLASS_UTURN = 6
 CLASS_VMAX_10 = 7
 CLASS_VMAX_30 = 8
 
-# Distancias (cm) para lógica de seguridad
-YIELD_SAFE_DISTANCE = 25.0          # para CEDA EL PASO
-OBSTACLE_SLOW_DISTANCE = 40.0       # bajar velocidad
-OBSTACLE_STOP_DISTANCE = 25.0       # frenar
-CLEAR_DISTANCE = 45.0               # salir de emergencia
+# ==========================
+#   CONFIG MOVIMIENTO
+# ==========================
+
+SPEED_STOP   = 0
+SPEED_SLOW   = 10
+SPEED_30     = 20
+SPEED_NORMAL = 30
+SPEED_MAX    = 40
+
+# --- Calibración de giros (ajusta estos valores en la pista) ---
+TURN_SPEED       = 20   # velocidad mientras gira (más lento = giro más preciso)
+TURN_ANGLE_DEG   = 30   # ángulo del servo para giros de 90°
+TURN_TIME_90_I     = 1.8  # duración del giro para ~90° (AJUSTA EN LA PISTA)
+TURN_TIME_90_D     = 1.2
+
+UTURN_ANGLE_DEG  = 30   # ángulo para la vuelta en U
+UTURN_TIME_180   = 2.5  # duración para ~180° (AJUSTA EN LA PISTA)
 
 current_speed = SPEED_STOP
 control_status = "Inicializando..."
 
-COMMAND_COOLDOWN = 1.0  # segundos
+COMMAND_COOLDOWN = 3.0  # segundos: evita encadenar giros mientras aún gira
 last_command_time = 0.0
 last_class_executed = None
 
 EMERGENCY_STOP = False
-
-# 👉 NUEVO: bandera para activar/desactivar autoconducción
 AUTO_DRIVE_ENABLED = False
 
-# Estado expuesto a la interfaz
+# ==========================
+#   CONFIG STREAM (MÓVIL)
+# ==========================
+
+TARGET_FPS   = 12.0
+STREAM_WIDTH = 320
+STREAM_HEIGHT = 240
+JPEG_QUALITY = 30
+
+# ==========================
+#   ESTADO + LOCKS
+# ==========================
+
+state_lock = threading.Lock()
+hardware_lock = threading.Lock()
+frame_lock = threading.Lock()
+
 last_detection = {
     "cls_id": None,
     "label": None,
@@ -130,21 +141,28 @@ last_detection = {
     "emergency_stop": False,
     "control_status": control_status,
     "auto_drive_enabled": AUTO_DRIVE_ENABLED,
+    "target_fps": TARGET_FPS,
+    "jpeg_quality": JPEG_QUALITY,
+    "width": STREAM_WIDTH,
+    "height": STREAM_HEIGHT,
 }
 
+last_raw_frame = None
+last_processed_frame = None
+
 # ==========================
-#   PROXIMIDAD: get_distance() DEL PiCar-X
+#   ULTRASONIDO
 # ==========================
 
+OBSTACLE_STOP_DISTANCE = 25.0
+CLEAR_DISTANCE = 45.0
+
 def read_distance():
-    """
-    Lee la distancia desde el sensor ultrasónico integrado del PiCar-X.
-    Usa px.get_distance(), que maneja internamente los pines de la placa.
-    """
     if px is None:
         return None
     try:
-        dist = px.get_distance()
+        with hardware_lock:
+            dist = px.get_distance()
         if dist is None or dist <= 0 or dist > 500:
             return None
         return float(dist)
@@ -152,67 +170,169 @@ def read_distance():
         print(f"[WARN] Error leyendo distancia: {e}")
         return None
 
-
 # ==========================
-#   CONTROL DE MOVIMIENTO
+#   HILO DE CONTROL
 # ==========================
 
-def set_speed_and_direction(speed, angle=0):
-    """Control básico del PiCar-X (o simulación si no hay hardware)."""
-    global px, current_speed
+control_queue = queue.Queue(maxsize=100)
+
+def _set_speed_and_direction_hw(speed, angle=0):
+    global current_speed
 
     speed = max(0, min(speed, SPEED_MAX))
     current_speed = speed
 
     if px is None:
-        # Modo simulación: solo mostrar
         print(f"[SIM] speed={speed}, angle={angle}")
         return
 
     try:
-        if speed == 0:
-            px.stop()
-        else:
-            px.forward(speed)
-
-        px.set_dir_servo_angle(angle)
+        with hardware_lock:
+            if speed == 0:
+                px.stop()
+            else:
+                px.forward(speed)
+            px.set_dir_servo_angle(angle)
     except Exception as e:
         print(f"[WARN] Error controlando PiCar-X: {e}")
 
+class ControlThread(threading.Thread):
+    def __init__(self, cmd_queue):
+        super().__init__(daemon=True)
+        self.cmd_queue = cmd_queue
+        self.running = True
 
-def handle_detection_action(cls_id, conf):
-    """
-    Decide qué hacer con el robot según la mejor clase detectada.
-    Respeta:
-      - EMERGENCY_STOP (proximidad)
-      - AUTO_DRIVE_ENABLED (botón interfaz)
-    """
-    global last_command_time, last_class_executed, control_status
-    global EMERGENCY_STOP, AUTO_DRIVE_ENABLED, last_detection
+    def stop(self):
+        self.running = False
+        try:
+            self.cmd_queue.put_nowait({"type": "STOP"})
+        except queue.Full:
+            pass
+
+    def run(self):
+        global EMERGENCY_STOP, control_status
+        print("[CONTROL] Hilo de control iniciado.")
+        while self.running:
+            try:
+                cmd = self.cmd_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            if cmd is None:
+                self.cmd_queue.task_done()
+                continue
+
+            cmd_type = cmd.get("type")
+
+            if EMERGENCY_STOP and cmd_type not in ("STOP", "EMERGENCY_STOP"):
+                self.cmd_queue.task_done()
+                continue
+
+            if cmd_type == "STOP":
+                _set_speed_and_direction_hw(SPEED_STOP, 0)
+                with state_lock:
+                    control_status = cmd.get("reason", "Detenido")
+                    last_detection["control_status"] = control_status
+
+            elif cmd_type == "SET_SPEED":
+                speed = cmd.get("speed", SPEED_STOP)
+                angle = cmd.get("angle", 0)
+                _set_speed_and_direction_hw(speed, angle)
+                with state_lock:
+                    control_status = cmd.get("status", "Actualizando velocidad/dirección")
+                    last_detection["control_status"] = control_status
+
+            elif cmd_type == "TURN":
+                speed = cmd.get("speed", SPEED_NORMAL)
+                angle = cmd.get("angle", 0)
+                duration = cmd.get("duration", 0.5)
+                after_speed = cmd.get("after_speed", SPEED_NORMAL)
+                after_angle = cmd.get("after_angle", 0)
+
+                # 1) Frenar un poco para que el giro siempre parta igual
+                _set_speed_and_direction_hw(SPEED_STOP, 0)
+                time.sleep(0.1)
+
+                # 2) Giro
+                _set_speed_and_direction_hw(speed, angle)
+                with state_lock:
+                    control_status = cmd.get("status", "Girando...")
+                    last_detection["control_status"] = control_status
+
+                if duration > 0:
+                    time.sleep(duration)
+
+                # 3) Estado final del movimiento (seguir avanzando)
+                _set_speed_and_direction_hw(after_speed, after_angle)
+
+            elif cmd_type == "UTURN":
+                speed = cmd.get("speed", SPEED_NORMAL)
+                angle = cmd.get("angle", -UTURN_ANGLE_DEG)
+                duration = cmd.get("duration", UTURN_TIME_180)
+                after_speed = cmd.get("after_speed", SPEED_NORMAL)
+                after_angle = cmd.get("after_angle", 0)
+
+                # 1) Frenar antes de la vuelta en U
+                _set_speed_and_direction_hw(SPEED_STOP, 0)
+                time.sleep(0.1)
+
+                # 2) Giro en U
+                _set_speed_and_direction_hw(speed, angle)
+                with state_lock:
+                    control_status = cmd.get("status", "Retorno en U")
+                    last_detection["control_status"] = control_status
+
+                if duration > 0:
+                    time.sleep(duration)
+
+                # 3) Estado final después de la maniobra (seguir avanzando)
+                _set_speed_and_direction_hw(after_speed, after_angle)
+
+            elif cmd_type == "EMERGENCY_STOP":
+                _set_speed_and_direction_hw(SPEED_STOP, 0)
+                with state_lock:
+                    EMERGENCY_STOP = True
+                    control_status = cmd.get("reason", "Detenido por emergencia")
+                    last_detection["control_status"] = control_status
+                    last_detection["emergency_stop"] = True
+
+            self.cmd_queue.task_done()
+
+        _set_speed_and_direction_hw(SPEED_STOP, 0)
+        print("[CONTROL] Hilo de control finalizado.")
+
+def enqueue_command(cmd_type, **kwargs):
+    cmd = {"type": cmd_type}
+    cmd.update(kwargs)
+    try:
+        control_queue.put_nowait(cmd)
+    except queue.Full:
+        print(f"[WARN] Cola de control llena, descartando {cmd_type}")
+
+# ==========================
+#   LÓGICA DE ACCIONES
+# ==========================
+
+def decide_and_enqueue_action(cls_id, conf):
+    global last_command_time, last_class_executed
 
     now = time.time()
+    with state_lock:
+        auto_enabled = AUTO_DRIVE_ENABLED
+        emergency = EMERGENCY_STOP
 
-    # Si no hay hardware, solo log
     if px is None:
         print(f"[ACCION-SIM] Clase {cls_id}, conf={conf:.2f}")
         return
 
-    # 🚨 Si estamos en modo emergencia, NO hacemos nada más
-    if EMERGENCY_STOP:
-        set_speed_and_direction(SPEED_STOP, 0)
-        control_status = "Detenido (emergencia proximidad)"
-        print("[ACCION] EMERGENCY_STOP activo -> stop()")
-        last_detection["control_status"] = control_status
+    if emergency:
         return
 
-    # 👉 Si autoconducción está desactivada, no mover el robot
-    if not AUTO_DRIVE_ENABLED:
-        control_status = "Autoconducción desactivada (sin movimiento)"
-        last_detection["control_status"] = control_status
-        # Podemos seguir detectando, pero sin acciones
+    if not auto_enabled:
+        with state_lock:
+            last_detection["control_status"] = "Autoconducción desactivada"
         return
 
-    # Evitar comandos repetidos muy seguidos de la misma clase
     if cls_id == last_class_executed and (now - last_command_time) < COMMAND_COOLDOWN:
         return
 
@@ -220,86 +340,86 @@ def handle_detection_action(cls_id, conf):
     last_class_executed = cls_id
 
     if cls_id == CLASS_STOP:
-        # Detener completamente
-        set_speed_and_direction(SPEED_STOP, 0)
-        control_status = "Detenido por STOP"
-        print("[ACCION] STOP -> px.stop()")
+        enqueue_command("STOP", reason="Detenido por STOP")
+        with state_lock:
+            last_detection["control_status"] = "Detenido por STOP"
 
     elif cls_id == CLASS_GO_STRAIGHT:
-        # Avanzar recto
-        set_speed_and_direction(SPEED_NORMAL, 0)
-        control_status = "Avanzando recto"
-        print("[ACCION] SIGA -> forward(NORMAL)")
+        enqueue_command(
+            "SET_SPEED",
+            speed=SPEED_NORMAL,
+            angle=0,
+            status="Avanzando recto",
+        )
 
     elif cls_id == CLASS_TURN_RIGHT:
-        # Giro suave derecha + seguir recto
-        control_status = "Girando a la derecha"
-        print("[ACCION] GIRO DERECHA -> giro + luego recto")
-        set_speed_and_direction(SPEED_NORMAL, TURN_ANGLE)
-        time.sleep(0.5)
-        set_speed_and_direction(SPEED_NORMAL, 0)
+        # Detectar → parar → girar 90° → seguir
+        enqueue_command(
+            "TURN",
+            speed=TURN_SPEED,
+            angle=+TURN_ANGLE_DEG,
+            duration=TURN_TIME_90_D,
+            after_speed=SPEED_NORMAL,
+            after_angle=0,
+            status="Giro ~90° a la derecha",
+        )
 
     elif cls_id == CLASS_TURN_LEFT:
-        # Giro suave izquierda + seguir recto
-        control_status = "Girando a la izquierda"
-        print("[ACCION] GIRO IZQUIERDA -> giro - luego recto")
-        set_speed_and_direction(SPEED_NORMAL, -TURN_ANGLE)
-        time.sleep(0.5)
-        set_speed_and_direction(SPEED_NORMAL, 0)
+        # Detectar → parar → girar 90° → seguir
+        enqueue_command(
+            "TURN",
+            speed=TURN_SPEED,
+            angle=-TURN_ANGLE_DEG,
+            duration=TURN_TIME_90_I,
+            after_speed=SPEED_NORMAL,
+            after_angle=0,
+            status="Giro ~90° a la izquierda",
+        )
 
     elif cls_id == CLASS_YIELD:
-        # Ceda el paso: usar ultrasonido si existe
-        dist = read_distance()
-        if dist is not None:
-            print(f"[ULTRA] Distancia (ceda): {dist:.1f} cm")
-            if dist < YIELD_SAFE_DISTANCE:
-                set_speed_and_direction(SPEED_STOP, 0)
-                control_status = f"Cediendo el paso - obstáculo a {dist:.1f} cm"
-                print("[ACCION] CEDA: OBJETO CERCA -> stop()")
-            else:
-                set_speed_and_direction(SPEED_SLOW, 0)
-                time.sleep(0.5)
-                set_speed_and_direction(SPEED_NORMAL, 0)
-                control_status = "Cediendo el paso - vía libre"
-        else:
-            # Sin lectura, al menos reducimos la velocidad
-            set_speed_and_direction(SPEED_SLOW, 0)
-            control_status = "Cediendo el paso - sin lectura ultrasónico"
+        enqueue_command(
+            "SET_SPEED",
+            speed=SPEED_SLOW,
+            angle=0,
+            status="Cediendo el paso (simple)",
+        )
 
     elif cls_id == CLASS_UTURN:
-        # Retorno en U
-        control_status = "Retorno en U"
-        print("[ACCION] RETORNO -> giro fuerte para U")
-        set_speed_and_direction(SPEED_NORMAL, -UTURN_ANGLE)
-        time.sleep(UTURN_TIME)
-        set_speed_and_direction(SPEED_NORMAL, 0)
+        # Detectar → parar → girar 180° → seguir
+        enqueue_command(
+            "UTURN",
+            speed=TURN_SPEED,
+            angle=-UTURN_ANGLE_DEG,
+            duration=UTURN_TIME_180,
+            after_speed=SPEED_NORMAL,
+            after_angle=0,
+            status="Giro ~180° (vuelta en U)",
+        )
 
     elif cls_id == CLASS_VMAX_10:
-        # Ajustar velocidad a ~10 km/h
-        control_status = "Velocidad ajustada a ~10 km/h"
-        print("[ACCION] VEL MÁX 10 -> SPEED_SLOW")
-        set_speed_and_direction(SPEED_SLOW, 0)
+        enqueue_command(
+            "SET_SPEED",
+            speed=SPEED_SLOW,
+            angle=0,
+            status="Velocidad ~10 km/h",
+        )
 
     elif cls_id == CLASS_VMAX_30:
-        # Ajustar velocidad a ~30 km/h
-        control_status = "Velocidad ajustada a ~30 km/h"
-        print("[ACCION] VEL MÁX 30 -> SPEED_30")
-        set_speed_and_direction(SPEED_30, 0)
-
+        enqueue_command(
+            "SET_SPEED",
+            speed=SPEED_30,
+            angle=0,
+            status="Velocidad ~30 km/h",
+        )
     else:
-        control_status = f"Clase {cls_id} sin acción específica"
-        print(f"[ACCION] Clase {cls_id} sin acción definida. conf={conf:.2f}")
-
-    # Actualizar estado en last_detection
-    last_detection["control_status"] = control_status
-
+        with state_lock:
+            last_detection["control_status"] = f"Clase {cls_id} sin acción"
 
 # ==========================
 #   TFLITE HELPERS
 # ==========================
 
 def init_tflite():
-    """Carga el modelo TFLite y prepara detalles de entrada/salida."""
     global interpreter, input_details, output_details, INPUT_W, INPUT_H
 
     if Interpreter is None:
@@ -316,53 +436,18 @@ def init_tflite():
     _, INPUT_H, INPUT_W, _ = input_details[0]["shape"]
     print(f"[OK] Modelo TFLite cargado. Input: {INPUT_W}x{INPUT_H}")
 
-
-def nms(boxes, scores, iou_threshold):
-    """Non-Maximum Suppression básica."""
-    idxs = np.argsort(scores)[::-1]
-    selected = []
-
-    while len(idxs) > 0:
-        current = idxs[0]
-        selected.append(current)
-
-        rest = idxs[1:]
-        if len(rest) == 0:
-            break
-
-        ious = []
-        for i in rest:
-            x1 = max(boxes[current][0], boxes[i][0])
-            y1 = max(boxes[current][1], boxes[i][1])
-            x2 = min(boxes[current][2], boxes[i][2])
-            y2 = min(boxes[current][3], boxes[i][3])
-
-            inter = max(0, x2 - x1) * max(0, y2 - y1)
-            area1 = (boxes[current][2] - boxes[current][0]) * (boxes[current][3] - boxes[current][1])
-            area2 = (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1])
-            union = area1 + area2 - inter
-            iou = inter / union if union > 0 else 0
-            ious.append(iou)
-
-        idxs = rest[np.array(ious) < iou_threshold]
-
-    return selected
-
-
 def detect_tflite(frame):
     """
-    Corre el modelo TFLite sobre un frame BGR.
-    Se queda SOLO con la mejor detección (mayor confianza) distinta de FONDO,
-    dibuja una sola caja y dispara la acción correspondiente en el PiCar-X.
+    Corre TFLite sobre el frame y dibuja SOLO la mejor caja (no FONDO).
+    Actualiza last_detection y encola acción.
     """
-    global interpreter, input_details, output_details, last_detection, AUTO_DRIVE_ENABLED
+    global interpreter, input_details, output_details, control_status
 
     if interpreter is None:
         return frame
 
     h, w, _ = frame.shape
 
-    # Preprocesamiento
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     img = cv2.resize(img, (INPUT_W, INPUT_H))
     img = img.astype(np.float32) / 255.0
@@ -371,14 +456,9 @@ def detect_tflite(frame):
     interpreter.set_tensor(input_details[0]["index"], img)
     interpreter.invoke()
 
-    # Asumimos salida tipo YOLO: [N, 5 + num_classes]
     preds = interpreter.get_tensor(output_details[0]["index"])[0]
 
-    boxes = []
-    scores = []
-    classes = []
-
-    num_classes = preds.shape[1] - 5
+    boxes, scores, classes = [], [], []
 
     for det in preds:
         x, y, bw, bh, obj_conf = det[:5]
@@ -386,10 +466,16 @@ def detect_tflite(frame):
         cls_id = int(np.argmax(cls_scores))
         score = float(cls_scores[cls_id] * obj_conf)
 
-        if score < CONF_THRESH:
-            continue
+        # --- UMBRAL POR CLASE ---
+        if cls_id == CLASS_TURN_LEFT:
+            min_conf = CONF_THRESH_LEFT
+        else:
+            min_conf = CONF_THRESH
 
-        # Escalar al tamaño original
+        if score < min_conf:
+            continue
+        # ------------------------
+
         x *= w
         y *= h
         bw *= w
@@ -411,24 +497,26 @@ def detect_tflite(frame):
     scores = np.array(scores)
     classes = np.array(classes)
 
-    idxs = nms(boxes, scores, IOU_THRESH)
-
-    # Buscar SOLO la mejor detección que NO sea FONDO
+    # Elegir la mejor detección NO FONDO con un pequeño "boost" a giro izquierda
     best_idx = None
     best_score = -1.0
 
-    for i in idxs:
-        cls_id = int(classes[i])
-
-        if cls_id == BACKGROUND_CLASS_ID:
+    for i in range(len(scores)):
+        cid = int(classes[i])
+        if cid == BACKGROUND_CLASS_ID:
             continue
 
-        if scores[i] > best_score:
-            best_score = scores[i]
+        score_i = scores[i]
+
+        # Pequeño bonus a giro izquierda para que se active antes
+        if cid == CLASS_TURN_LEFT:
+            score_i += 0.02  # ajustable
+
+        if score_i > best_score:
+            best_score = score_i
             best_idx = i
 
     if best_idx is None:
-        # Solo había FONDO o detecciones descartadas
         return frame
 
     x1, y1, x2, y2 = boxes[best_idx]
@@ -436,7 +524,6 @@ def detect_tflite(frame):
     best_conf = float(scores[best_idx])
     best_label = CLASS_NAMES[best_cls] if best_cls < len(CLASS_NAMES) else f"cls{best_cls}"
 
-    # Dibujar SOLO una caja
     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
     cv2.putText(
         frame,
@@ -448,16 +535,15 @@ def detect_tflite(frame):
         2,
     )
 
-    # Actualizar última detección (para la interfaz web)
-    last_detection["cls_id"] = best_cls
-    last_detection["label"] = best_label
-    last_detection["confidence"] = best_conf
-    last_detection["timestamp"] = time.time()
-    last_detection["control_status"] = control_status
-    last_detection["auto_drive_enabled"] = AUTO_DRIVE_ENABLED
+    with state_lock:
+        last_detection["cls_id"] = best_cls
+        last_detection["label"] = best_label
+        last_detection["confidence"] = best_conf
+        last_detection["timestamp"] = time.time()
+        last_detection["control_status"] = control_status
+        last_detection["auto_drive_enabled"] = AUTO_DRIVE_ENABLED
 
-    # Ejecutar acción de movimiento
-    handle_detection_action(best_cls, best_conf)
+    decide_and_enqueue_action(best_cls, best_conf)
 
     return frame
 
@@ -473,12 +559,19 @@ try:
 
     try:
         picam2 = Picamera2()
-        config = picam2.create_preview_configuration(
-            main={"size": (640, 480), "format": "BGR888"}
+
+        video_config = picam2.create_video_configuration(
+            main={
+                "size": (320, 240),
+                "format": "BGR888",
+            },
+            buffer_count=2,
         )
-        picam2.configure(config)
+        picam2.configure(video_config)
+        picam2.set_controls({"FrameRate": 20})
+
         picam2.start()
-        print("[INFO] Picamera2 inicializada.")
+        print("[INFO] Picamera2 modo video, buffer_count=2, FrameRate=20.")
     except Exception as e:
         print(f"[ERROR] Falló Picamera2: {e}")
         picam2 = None
@@ -492,68 +585,147 @@ if picam2 is None:
         print("[ERROR] No se pudo abrir la cámara con OpenCV.")
     else:
         print("[INFO] OpenCV VideoCapture(0) inicializado.")
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
 
+# ==========================
+#   HILOS DE CÁMARA Y DETECCIÓN
+# ==========================
 
-def generate_frames():
-    """
-    Generador de frames MJPEG para la ruta /video_feed.
-    Incluye lógica de ultrasonido para EMERGENCY_STOP y reducción de velocidad.
-    """
-    global EMERGENCY_STOP, control_status, AUTO_DRIVE_ENABLED
+class CameraThread(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.running = True
 
-    while True:
-        # Leer cámara
-        if picam2 is not None:
-            frame = picam2.capture_array()
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        else:
-            if cap is None:
-                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    def stop(self):
+        self.running = False
+
+    def run(self):
+        global last_raw_frame
+
+        print("[CAMERA] Hilo de cámara iniciado.")
+        while self.running:
+            if picam2 is not None:
+                frame = picam2.capture_array()
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             else:
+                if cap is None:
+                    time.sleep(0.05)
+                    continue
                 ret, frame = cap.read()
                 if not ret:
+                    time.sleep(0.05)
                     continue
+                for _ in range(2):
+                    ret2, f2 = cap.read()
+                    if not ret2:
+                        break
+                    frame = f2
 
-        # --------- SEGURIDAD POR ULTRASONIDO ---------
-        dist = read_distance()
-        if dist is not None:
-            # Actualizar info para la interfaz SIEMPRE
-            last_detection["obstacle_distance_cm"] = dist
+            with frame_lock:
+                last_raw_frame = frame
 
-            if dist < OBSTACLE_STOP_DISTANCE:
-                # Activar emergencia y detener
-                if not EMERGENCY_STOP:
-                    print(f"[SEGURIDAD] Obstáculo a {dist:.1f} cm -> EMERGENCY STOP")
-                EMERGENCY_STOP = True
-                set_speed_and_direction(SPEED_STOP, 0)
-                control_status = f"Detenido por obstáculo a {dist:.1f} cm"
+            time.sleep(0.005)
 
-            elif dist < OBSTACLE_SLOW_DISTANCE and not EMERGENCY_STOP and current_speed > SPEED_SLOW:
-                set_speed_and_direction(SPEED_SLOW, 0)
-                control_status = f"Reduciendo velocidad por obstáculo a {dist:.1f} cm"
-                print(f"[SEGURIDAD] Obstáculo a {dist:.1f} cm -> SLOW")
+        print("[CAMERA] Hilo de cámara finalizado.")
 
-            elif dist > CLEAR_DISTANCE and EMERGENCY_STOP:
-                EMERGENCY_STOP = False
-                control_status = "Emergencia liberada (vía despejada)"
-                print(f"[SEGURIDAD] Distancia {dist:.1f} cm -> EMERGENCIA OFF")
+class DetectionThread(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.running = True
+        self.counter = 0
+
+    def stop(self):
+        self.running = False
+
+    def run(self):
+        global last_raw_frame, last_processed_frame, EMERGENCY_STOP
+
+        print("[DETECT] Hilo de detección iniciado.")
+        while self.running:
+            with frame_lock:
+                frame = None if last_raw_frame is None else last_raw_frame.copy()
+
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            self.counter += 1
+
+            dist = read_distance()
+            with state_lock:
+                last_detection["obstacle_distance_cm"] = dist
+
+            if dist is not None and dist < OBSTACLE_STOP_DISTANCE and not EMERGENCY_STOP:
+                with state_lock:
+                    EMERGENCY_STOP = True
+                    last_detection["emergency_stop"] = True
+                    last_detection["control_status"] = f"Detenido por obstáculo a {dist:.1f} cm"
+                enqueue_command("EMERGENCY_STOP", reason=f"Detenido por obstáculo a {dist:.1f} cm")
+
+            if dist is not None and dist > CLEAR_DISTANCE and EMERGENCY_STOP:
+                with state_lock:
+                    EMERGENCY_STOP = False
+                    last_detection["emergency_stop"] = False
+                    last_detection["control_status"] = "Emergencia liberada (vía despejada)"
+
+            if self.counter % DETECT_EVERY_N != 0:
+                with frame_lock:
+                    last_processed_frame = frame
+                time.sleep(0.003)
+                continue
+
+            processed = detect_tflite(frame)
+
+            with frame_lock:
+                last_processed_frame = processed
+
+        print("[DETECT] Hilo de detección finalizado.")
+
+camera_thread = None
+detection_thread = None
+control_thread = None
+
+# ==========================
+#   GENERADOR DE FRAMES
+# ==========================
+
+def generate_frames():
+    global last_raw_frame, last_processed_frame
+
+    while True:
+        loop_start = time.time()
+
+        with frame_lock:
+            frame = last_processed_frame if last_processed_frame is not None else last_raw_frame
+
+        if frame is None:
+            time.sleep(0.01)
+            continue
+
+        with state_lock:
+            width = STREAM_WIDTH
+            height = STREAM_HEIGHT
+            quality = JPEG_QUALITY
+            fps = TARGET_FPS
+
+        if width and height:
+            frame_resized = cv2.resize(frame, (width, height))
         else:
-            # Sin lectura, dejamos distancia en None
-            last_detection["obstacle_distance_cm"] = None
+            frame_resized = frame
 
-        # Guardar flags de emergencia/estado para la interfaz
-        last_detection["emergency_stop"] = EMERGENCY_STOP
-        last_detection["control_status"] = control_status
-        last_detection["auto_drive_enabled"] = AUTO_DRIVE_ENABLED
-
-        # --------- DETECCIÓN DE SEÑALES ---------
-        frame = detect_tflite(frame)
-
-        ok, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        ok, buffer = cv2.imencode(".jpg", frame_resized, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
         if not ok:
             continue
 
         frame_bytes = buffer.tobytes()
+
+        frame_period = 1.0 / fps if fps > 0 else 0
+        elapsed = time.time() - loop_start
+        if frame_period > 0 and elapsed < frame_period:
+            time.sleep(frame_period - elapsed)
 
         yield (
             b"--frame\r\n"
@@ -561,13 +733,12 @@ def generate_frames():
         )
 
 # ==========================
-#          RUTAS FLASK
+#   RUTAS FLASK
 # ==========================
 
 @app.route("/")
 def index():
     return render_template("index.html")
-
 
 @app.route("/video_feed")
 def video_feed():
@@ -576,44 +747,114 @@ def video_feed():
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
+@app.route("/snapshot")
+def snapshot():
+    global last_raw_frame, last_processed_frame
+
+    with frame_lock:
+        frame = last_raw_frame  # mínimo delay visual
+
+    if frame is None:
+        tmp = np.zeros((240, 320, 3), dtype=np.uint8)
+        ok, buffer = cv2.imencode(".jpg", tmp, [cv2.IMWRITE_JPEG_QUALITY, 40])
+    else:
+        with state_lock:
+            width = STREAM_WIDTH
+            height = STREAM_HEIGHT
+            quality = JPEG_QUALITY
+
+        if width and height:
+            frame_resized = cv2.resize(frame, (width, height))
+        else:
+            frame_resized = frame
+
+        ok, buffer = cv2.imencode(".jpg", frame_resized, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+
+    if not ok:
+        return ("", 500)
+
+    resp = Response(buffer.tobytes(), mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
 
 @app.route("/last_detection")
 def get_last_detection():
-    """Devuelve la última detección + estado de proximidad en JSON."""
-    return jsonify(last_detection)
-
-
-# 👉 NUEVAS RUTAS: control desde la interfaz
+    with state_lock:
+        return jsonify(last_detection)
 
 @app.route("/control/start", methods=["POST"])
 def control_start():
-    """
-    Activa autoconducción.
-    El robot empezará a reaccionar a las señales (si no hay emergencia).
-    """
     global AUTO_DRIVE_ENABLED, control_status
-    AUTO_DRIVE_ENABLED = True
-    control_status = "Autoconducción activada desde interfaz"
-    last_detection["auto_drive_enabled"] = AUTO_DRIVE_ENABLED
-    last_detection["control_status"] = control_status
-    print("[CONTROL] Autoconducción ON (interfaz)")
-    return jsonify({"ok": True, "auto_drive_enabled": AUTO_DRIVE_ENABLED})
-
+    with state_lock:
+        AUTO_DRIVE_ENABLED = True
+        control_status = "Autoconducción activada"
+        last_detection["auto_drive_enabled"] = AUTO_DRIVE_ENABLED
+        last_detection["control_status"] = control_status
+    print("[CONTROL] Autoconducción ON")
+    return jsonify({"ok": True, "auto_drive_enabled": True})
 
 @app.route("/control/stop", methods=["POST"])
 def control_stop():
-    """
-    Detiene el robot manualmente y desactiva autoconducción.
-    """
     global AUTO_DRIVE_ENABLED, control_status
-    AUTO_DRIVE_ENABLED = False
-    set_speed_and_direction(SPEED_STOP, 0)
-    control_status = "Detenido manualmente desde interfaz"
-    last_detection["auto_drive_enabled"] = AUTO_DRIVE_ENABLED
-    last_detection["control_status"] = control_status
-    print("[CONTROL] Autoconducción OFF + stop() (interfaz)")
-    return jsonify({"ok": True, "auto_drive_enabled": AUTO_DRIVE_ENABLED})
+    with state_lock:
+        AUTO_DRIVE_ENABLED = False
+        control_status = "Detenido manualmente"
+        last_detection["auto_drive_enabled"] = AUTO_DRIVE_ENABLED
+        last_detection["control_status"] = control_status
+    enqueue_command("STOP", reason="Detenido manualmente")
+    print("[CONTROL] Autoconducción OFF + STOP")
+    return jsonify({"ok": True, "auto_drive_enabled": False})
 
+@app.route("/config", methods=["GET", "POST"])
+def config_stream():
+    global TARGET_FPS, JPEG_QUALITY, STREAM_WIDTH, STREAM_HEIGHT
+
+    if request.method == "GET":
+        with state_lock:
+            cfg = {
+                "target_fps": TARGET_FPS,
+                "jpeg_quality": JPEG_QUALITY,
+                "width": STREAM_WIDTH,
+                "height": STREAM_HEIGHT,
+            }
+        return jsonify(cfg)
+
+    data = request.get_json(silent=True) or {}
+
+    with state_lock:
+        fps = data.get("target_fps")
+        if isinstance(fps, (int, float)) and 1 <= fps <= 30:
+            TARGET_FPS = float(fps)
+
+        q = data.get("jpeg_quality")
+        if isinstance(q, int) and 10 <= q <= 95:
+            JPEG_QUALITY = int(q)
+
+        w = data.get("width")
+        h = data.get("height")
+        if isinstance(w, int) and isinstance(h, int):
+            if 160 <= w <= 640 and 120 <= h <= 480:
+                STREAM_WIDTH = w
+                STREAM_HEIGHT = h
+
+        last_detection["target_fps"] = TARGET_FPS
+        last_detection["jpeg_quality"] = JPEG_QUALITY
+        last_detection["width"] = STREAM_WIDTH
+        last_detection["height"] = STREAM_HEIGHT
+
+        cfg = {
+            "target_fps": TARGET_FPS,
+            "jpeg_quality": JPEG_QUALITY,
+            "width": STREAM_WIDTH,
+            "height": STREAM_HEIGHT,
+        }
+
+    print(f"[CONFIG] Actualizado: {cfg}")
+    return jsonify({"ok": True, "config": cfg})
+
+# ==========================
+#   MAIN
+# ==========================
 
 if __name__ == "__main__":
     try:
@@ -621,16 +862,39 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[ERROR] No se pudo cargar TFLite: {e}")
 
-    print("[INFO] Servidor Flask iniciado en http://0.0.0.0:8000")
+    control_thread = ControlThread(control_queue)
+    control_thread.start()
+
+    camera_thread = CameraThread()
+    camera_thread.start()
+
+    detection_thread = DetectionThread()
+    detection_thread.start()
+
+    print("[INFO] Servidor Flask en http://0.0.0.0:8000")
 
     try:
         app.run(host="0.0.0.0", port=8000, debug=False, threaded=True)
     finally:
         print("[INFO] Cerrando recursos...")
+        if camera_thread is not None:
+            camera_thread.stop()
+        if detection_thread is not None:
+            detection_thread.stop()
+        if control_thread is not None:
+            control_thread.stop()
+
         if picam2 is not None:
-            picam2.stop()
+            try:
+                picam2.stop()
+            except Exception:
+                pass
         if px is not None:
-            px.stop()
+            try:
+                with hardware_lock:
+                    px.stop()
+            except Exception:
+                pass
         if cap is not None:
             cap.release()
         cv2.destroyAllWindows()

@@ -302,7 +302,7 @@
       <div class="control-buttons">
         <div class="chip">
           <span class="chip-dot"></span>
-          <span>Streaming en vivo</span>
+          <span>Streaming en vivo (snapshot optimizado)</span>
         </div>
         <button id="btn-start-auto" class="btn btn-sm btn-success">
           Iniciar autoconducción
@@ -321,14 +321,15 @@
           <h2>VISOR DE CÁMARA</h2>
           <span class="status-pill">
             Endpoint:
-            <span class="text-info">/video_feed</span>
+            <span class="text-info">/snapshot</span>
           </span>
         </div>
         <div class="card-shell-body">
           <div class="video-frame mb-2">
+            <!-- Usamos /snapshot, la URL se actualiza vía JS para evitar caché -->
             <img
               id="video-stream"
-              src="{{ url_for('video_feed') }}"
+              src="{{ url_for('snapshot') }}"
               alt="Video en vivo"
             />
           </div>
@@ -421,6 +422,7 @@
   <script>
     const HISTORY_LIMIT = 6;
     const historyList = [];
+
     const elLabel = document.getElementById("last-label");
     const elId = document.getElementById("last-id");
     const elConf = document.getElementById("last-conf");
@@ -437,8 +439,48 @@
     const elControlStatusInfo = document.getElementById("control-status-info");
     const btnStartAuto = document.getElementById("btn-start-auto");
     const btnStopAuto = document.getElementById("btn-stop-auto");
+    const imgVideo = document.getElementById("video-stream");
 
     elHistoryMax.textContent = HISTORY_LIMIT;
+
+    // ===== SNAPSHOT LOOP (vídeo fluido con baja latencia) =====
+    const SNAPSHOT_INTERVAL_MS = 70; // ~11 FPS
+    let snapshotTimer = null;
+    let snapshotActive = false;
+
+    function nextSnapshot() {
+      if (!snapshotActive) return;
+      // ts evita caché del navegador
+      imgVideo.src = "/snapshot?ts=" + Date.now();
+    }
+
+    function startSnapshotLoop() {
+      if (snapshotActive) return;
+      snapshotActive = true;
+      nextSnapshot();
+    }
+
+    function stopSnapshotLoop() {
+      snapshotActive = false;
+      if (snapshotTimer) {
+        clearTimeout(snapshotTimer);
+        snapshotTimer = null;
+      }
+    }
+
+    imgVideo.addEventListener("load", () => {
+      if (!snapshotActive) return;
+      // Programamos el siguiente snapshot SOLO cuando este termina de cargar
+      snapshotTimer = setTimeout(nextSnapshot, SNAPSHOT_INTERVAL_MS);
+    });
+
+    imgVideo.addEventListener("error", () => {
+      if (!snapshotActive) return;
+      // Si falla, reintentamos más lento
+      snapshotTimer = setTimeout(nextSnapshot, 500);
+    });
+
+    // ===== LÓGICA DE SEÑALES / HISTORIAL =====
 
     function classifySignalType(label) {
       if (!label) return "none";
@@ -524,7 +566,6 @@
 
     function updateEmergencyUI(emergency, distance, controlStatus) {
       if (emergency) {
-        // Mostrar banner rojo
         elEmergencyBanner.style.display = "flex";
         elEmergencyTextMain.textContent = "Obstáculo detectado. Robot detenido por seguridad.";
         if (typeof distance === "number") {
@@ -532,14 +573,9 @@
         } else {
           elEmergencyDistance.textContent = "Distancia aproximada: sin lectura";
         }
-
-        // Estado de proximidad debajo de la señal
         elDistanceInfo.textContent = "";
       } else {
-        // Ocultar banner si no hay emergencia
         elEmergencyBanner.style.display = "none";
-
-        // Mostrar info suave de obstáculo si hay lectura
         if (typeof distance === "number") {
           elDistanceInfo.textContent = `Obstáculo detectado a ${distance.toFixed(1)} cm (sin emergencia).`;
         } else {
@@ -547,7 +583,6 @@
         }
       }
 
-      // Mostrar estado del control si viene desde el backend
       if (controlStatus) {
         elControlStatusInfo.textContent = `Estado del control: ${controlStatus}`;
       } else {
@@ -567,6 +602,10 @@
       }
     }
 
+    // ===== POLLING /last_detection (ligero) =====
+    const DETECTION_POLL_MS = 600;
+    let detectionInterval = null;
+
     async function fetchLastDetection() {
       try {
         const res = await fetch("/last_detection");
@@ -577,11 +616,9 @@
         const controlStatus = data.control_status;
         const autoEnabled = data.auto_drive_enabled;
 
-        // Actualizar estado de botones
         updateAutoDriveButtons(!!autoEnabled);
 
         if (data && data.cls_id !== null) {
-          // Actualizar panel principal
           elLabel.textContent = data.label;
           elId.textContent = data.cls_id;
           elConf.textContent = (data.confidence || 0).toFixed(2);
@@ -604,7 +641,6 @@
           const type = classifySignalType(data.label);
           updateSignalDot(type);
 
-          // Guardar en historial
           addToHistory({
             cls_id: data.cls_id,
             label: data.label,
@@ -612,7 +648,6 @@
             timeStr: ts ? ts.toLocaleTimeString() : "-",
           });
         } else {
-          // Sin detección
           elLabel.textContent = "(sin detección)";
           elId.textContent = "-";
           elConf.textContent = "-";
@@ -625,13 +660,11 @@
           updateSignalDot("none");
         }
 
-        // Actualizar UI de proximidad / emergencia
         updateEmergencyUI(emergency, obst, controlStatus);
       } catch (err) {
         console.error("Error consultando /last_detection:", err);
         elStatusPill.textContent = "Error consultando API";
         elStatusPill.classList.remove("status-pill-strong");
-        // En error, ocultamos banner para no confundir
         elEmergencyBanner.style.display = "none";
       }
     }
@@ -639,7 +672,6 @@
     async function sendControl(action) {
       try {
         await fetch(`/control/${action}`, { method: "POST" });
-        // Forzamos refresh de estado después de pulsar botón
         fetchLastDetection();
       } catch (err) {
         console.error("Error enviando control:", err);
@@ -654,8 +686,33 @@
       sendControl("stop");
     });
 
-    setInterval(fetchLastDetection, 600);
-    fetchLastDetection();
+    // ===== Gestión de visibilidad (ahorro en 2º plano) =====
+    function startLoops() {
+      startSnapshotLoop();
+      if (!detectionInterval) {
+        detectionInterval = setInterval(fetchLastDetection, DETECTION_POLL_MS);
+      }
+      fetchLastDetection();
+    }
+
+    function stopLoops() {
+      stopSnapshotLoop();
+      if (detectionInterval) {
+        clearInterval(detectionInterval);
+        detectionInterval = null;
+      }
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        stopLoops();
+      } else {
+        startLoops();
+      }
+    });
+
+    // Arrancamos al cargar
+    startLoops();
   </script>
 </body>
 </html>
