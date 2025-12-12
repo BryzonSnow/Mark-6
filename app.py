@@ -7,9 +7,7 @@ import cv2
 import numpy as np
 from flask import Flask, Response, jsonify, render_template, request
 
-# ==========================
 #   CONFIGURACIÓN GENERAL
-# ==========================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TFLITE_MODEL_PATH = os.path.join(BASE_DIR, "best-fp16.tflite")
@@ -17,11 +15,9 @@ TFLITE_MODEL_PATH = os.path.join(BASE_DIR, "best-fp16.tflite")
 app = Flask(__name__)
 
 # Detectar solo en 1 de cada N frames (reduce carga de CPU)
-DETECT_EVERY_N = 1  # prueba 2; si sigue pesado, 3
+DETECT_EVERY_N = 1  
 
-# ==========================
 #   HARDWARE: PiCar-X
-# ==========================
 
 try:
     from picarx import Picarx
@@ -38,9 +34,7 @@ if Picarx is not None:
         print(f"[ERROR] No se pudo inicializar Picar-X: {e}")
         px = None
 
-# ==========================
 #   TFLITE / DETECCIÓN
-# ==========================
 
 try:
     from tflite_runtime.interpreter import Interpreter
@@ -86,9 +80,7 @@ CLASS_UTURN = 6
 CLASS_VMAX_10 = 7
 CLASS_VMAX_30 = 8
 
-# ==========================
 #   CONFIG MOVIMIENTO
-# ==========================
 
 SPEED_STOP   = 0
 SPEED_SLOW   = 10
@@ -96,14 +88,14 @@ SPEED_30     = 20
 SPEED_NORMAL = 30
 SPEED_MAX    = 40
 
-# --- Calibración de giros (ajusta estos valores en la pista) ---
+# --- Calibración de giros 
 TURN_SPEED       = 20   # velocidad mientras gira (más lento = giro más preciso)
 TURN_ANGLE_DEG   = 30   # ángulo del servo para giros de 90°
-TURN_TIME_90_I     = 1.8  # duración del giro para ~90° (AJUSTA EN LA PISTA)
+TURN_TIME_90_I     = 1.8  # duración del giro para 90°
 TURN_TIME_90_D     = 1.2
 
 UTURN_ANGLE_DEG  = 30   # ángulo para la vuelta en U
-UTURN_TIME_180   = 2.5  # duración para ~180° (AJUSTA EN LA PISTA)
+UTURN_TIME_180   = 2.5  # duración para 180° 
 
 current_speed = SPEED_STOP
 control_status = "Inicializando..."
@@ -115,18 +107,16 @@ last_class_executed = None
 EMERGENCY_STOP = False
 AUTO_DRIVE_ENABLED = False
 
-# ==========================
 #   CONFIG STREAM (MÓVIL)
-# ==========================
 
-TARGET_FPS   = 12.0
+TARGET_FPS   = 12.0 # Se puede aumentar
 STREAM_WIDTH = 320
 STREAM_HEIGHT = 240
 JPEG_QUALITY = 30
 
-# ==========================
+
 #   ESTADO + LOCKS
-# ==========================
+
 
 state_lock = threading.Lock()
 hardware_lock = threading.Lock()
@@ -150,9 +140,9 @@ last_detection = {
 last_raw_frame = None
 last_processed_frame = None
 
-# ==========================
+
 #   ULTRASONIDO
-# ==========================
+
 
 OBSTACLE_STOP_DISTANCE = 25.0
 CLEAR_DISTANCE = 45.0
@@ -170,9 +160,9 @@ def read_distance():
         print(f"[WARN] Error leyendo distancia: {e}")
         return None
 
-# ==========================
+
 #   HILO DE CONTROL
-# ==========================
+
 
 control_queue = queue.Queue(maxsize=100)
 
@@ -309,9 +299,7 @@ def enqueue_command(cmd_type, **kwargs):
     except queue.Full:
         print(f"[WARN] Cola de control llena, descartando {cmd_type}")
 
-# ==========================
 #   LÓGICA DE ACCIONES
-# ==========================
 
 def decide_and_enqueue_action(cls_id, conf):
     global last_command_time, last_class_executed
@@ -353,7 +341,7 @@ def decide_and_enqueue_action(cls_id, conf):
         )
 
     elif cls_id == CLASS_TURN_RIGHT:
-        # Detectar → parar → girar 90° → seguir
+        # Detectar -> parar -> girar 90° -> seguir
         enqueue_command(
             "TURN",
             speed=TURN_SPEED,
@@ -365,7 +353,7 @@ def decide_and_enqueue_action(cls_id, conf):
         )
 
     elif cls_id == CLASS_TURN_LEFT:
-        # Detectar → parar → girar 90° → seguir
+        # Detectar -> parar -> girar 90° -> seguir
         enqueue_command(
             "TURN",
             speed=TURN_SPEED,
@@ -385,7 +373,7 @@ def decide_and_enqueue_action(cls_id, conf):
         )
 
     elif cls_id == CLASS_UTURN:
-        # Detectar → parar → girar 180° → seguir
+        # Detectar -> parar -> girar 180° -> seguir
         enqueue_command(
             "UTURN",
             speed=TURN_SPEED,
@@ -415,9 +403,9 @@ def decide_and_enqueue_action(cls_id, conf):
         with state_lock:
             last_detection["control_status"] = f"Clase {cls_id} sin acción"
 
-# ==========================
+
 #   TFLITE HELPERS
-# ==========================
+
 
 def init_tflite():
     global interpreter, input_details, output_details, INPUT_W, INPUT_H
@@ -474,7 +462,7 @@ def detect_tflite(frame):
 
         if score < min_conf:
             continue
-        # ------------------------
+      
 
         x *= w
         y *= h
@@ -497,7 +485,7 @@ def detect_tflite(frame):
     scores = np.array(scores)
     classes = np.array(classes)
 
-    # Elegir la mejor detección NO FONDO con un pequeño "boost" a giro izquierda
+    # Elegir la mejor detección NO FONDO
     best_idx = None
     best_score = -1.0
 
@@ -547,9 +535,7 @@ def detect_tflite(frame):
 
     return frame
 
-# ==========================
 #   CÁMARA: PICAMERA2 / CV2
-# ==========================
 
 picam2 = None
 cap = None
@@ -590,9 +576,9 @@ if picam2 is None:
         except Exception:
             pass
 
-# ==========================
+
 #   HILOS DE CÁMARA Y DETECCIÓN
-# ==========================
+
 
 class CameraThread(threading.Thread):
     def __init__(self):
@@ -688,9 +674,9 @@ camera_thread = None
 detection_thread = None
 control_thread = None
 
-# ==========================
+
 #   GENERADOR DE FRAMES
-# ==========================
+
 
 def generate_frames():
     global last_raw_frame, last_processed_frame
@@ -732,9 +718,9 @@ def generate_frames():
             b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
         )
 
-# ==========================
+
 #   RUTAS FLASK
-# ==========================
+
 
 @app.route("/")
 def index():
@@ -852,9 +838,9 @@ def config_stream():
     print(f"[CONFIG] Actualizado: {cfg}")
     return jsonify({"ok": True, "config": cfg})
 
-# ==========================
+
 #   MAIN
-# ==========================
+
 
 if __name__ == "__main__":
     try:
