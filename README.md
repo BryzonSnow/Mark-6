@@ -51,6 +51,16 @@ El sistema procesa el video de la cámara del robot, detecta señales de tráfic
 - **Configuración de stream:** Parámetros ajustables de FPS, calidad JPEG y resolución
 - **Diseño responsive:** Interfaz moderna y adaptable a diferentes tamaños de pantalla
 
+### Arquitectura Multi-Hilo
+El sistema utiliza una arquitectura multi-hilo para garantizar rendimiento en tiempo real y operaciones concurrentes:
+- **Hilo de cámara (`CameraThread`):** Captura frames de video de forma continua y los almacena en un buffer compartido
+- **Hilo de detección (`DetectionThread`):** Procesa frames capturados, ejecuta inferencia del modelo TFLite, verifica obstáculos y actualiza el estado del sistema
+- **Hilo de control (`ControlThread`):** Ejecuta comandos de movimiento del robot de forma ordenada mediante un sistema de cola thread-safe
+- **Hilo principal (Flask):** Maneja las peticiones HTTP y el streaming de video a los clientes
+- **Sincronización:** Utiliza locks (`threading.Lock`) para proteger recursos compartidos (frames, estado, hardware) y evitar condiciones de carrera
+
+Esta arquitectura permite que la captura de video, la detección, el control del robot y el servidor web funcionen de forma paralela sin bloquearse entre sí, garantizando una respuesta en tiempo real.
+
 ## Tecnologías Utilizadas
 
 - **Backend:**
@@ -237,16 +247,24 @@ El sistema puede funcionar en modo simulación si no se detecta el hardware PiCa
 
 ## Funcionamiento Técnico
 
-1. **Captura de video:** El sistema captura frames de la cámara (Picamera2 o OpenCV) en un hilo dedicado
-2. **Preprocesamiento:** Cada frame se redimensiona a 320x320 y normaliza (valores 0-1)
-3. **Inferencia:** El modelo TFLite procesa el frame y genera detecciones (puede procesar 1 de cada N frames según `DETECT_EVERY_N`)
+El sistema opera mediante una arquitectura multi-hilo que permite procesamiento concurrente:
+
+1. **Captura de video (Hilo de Cámara):** El `CameraThread` captura frames de la cámara (Picamera2 o OpenCV) de forma continua y los almacena en un buffer compartido protegido por locks
+2. **Preprocesamiento (Hilo de Detección):** Cada frame se redimensiona a 320x320 y normaliza (valores 0-1)
+3. **Inferencia (Hilo de Detección):** El modelo TFLite procesa el frame y genera detecciones (puede procesar 1 de cada N frames según `DETECT_EVERY_N` para reducir carga de CPU)
 4. **Filtrado por umbral:** Se aplican umbrales de confianza específicos por clase (general 0.45, giro izquierda 0.30)
 5. **Selección inteligente:** Se elige la detección con mayor confianza (excluyendo fondo), con bonus para giro izquierda
-6. **Cola de comandos:** Las acciones se encolan en un sistema de cola thread-safe
-7. **Ejecución de comandos:** Un hilo de control dedicado ejecuta los comandos de forma ordenada
-8. **Seguridad:** Se verifica la distancia de obstáculos en cada frame del hilo de detección
-9. **Streaming:** Los frames procesados se codifican en JPEG y se transmiten vía MJPEG
+6. **Verificación de seguridad:** En paralelo, se lee la distancia del sensor ultrasónico y se activa frenado de emergencia si es necesario
+7. **Cola de comandos:** Las acciones se encolan en un sistema de cola thread-safe (`queue.Queue`) para evitar bloqueos
+8. **Ejecución de comandos (Hilo de Control):** El `ControlThread` procesa la cola de comandos de forma secuencial, ejecutando movimientos del robot de manera ordenada y segura
+9. **Streaming (Hilo Principal Flask):** Los frames procesados se codifican en JPEG y se transmiten vía MJPEG a los clientes web
 10. **Actualización:** La interfaz web se actualiza con la información más reciente mediante polling AJAX
+
+**Ventajas de la arquitectura multi-hilo:**
+- **Rendimiento:** La captura de video no se bloquea durante la inferencia del modelo
+- **Responsividad:** El servidor web responde inmediatamente sin esperar a que termine la detección
+- **Seguridad:** El control del robot se ejecuta en un hilo separado, permitiendo detenciones de emergencia inmediatas
+- **Eficiencia:** Los recursos se utilizan de forma óptima aprovechando el paralelismo del sistema
 
 ##  Notas de Seguridad
 
