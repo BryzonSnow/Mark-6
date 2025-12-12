@@ -30,15 +30,17 @@ El sistema procesa el video de la cámara del robot, detecta señales de tráfic
 
 ### Control Autónomo
 - **Sistema de decisión inteligente:** Selecciona la señal con mayor confianza (excluyendo fondo)
+- **Boost para giro izquierda:** Sistema otorga un pequeño bonus de confianza a las detecciones de giro izquierda para activarlas más fácilmente
 - **Control de velocidad adaptativo:** Ajusta la velocidad según la señal detectada
-- **Gestión de giros:** Manejo automático de giros suaves y retornos en U
-- **Cooldown de comandos:** Evita comandos repetidos muy seguidos
+- **Gestión de giros:** Manejo automático de giros suaves y retornos en U con tiempos diferenciados para izquierda/derecha
+- **Cooldown de comandos:** Evita comandos repetidos muy seguidos (3 segundos por defecto)
+- **Hilo de control dedicado:** Sistema de cola para comandos que garantiza ejecución ordenada
 
 ### Sistema de Seguridad
 - **Detección de obstáculos:** Sensor ultrasónico integrado del PiCar-X
 - **Frenado de emergencia:** Detención automática cuando detecta obstáculos cercanos (< 25 cm)
-- **Reducción preventiva de velocidad:** Disminuye velocidad cuando detecta obstáculos a distancia media (40 cm)
 - **Liberación automática:** Reanuda el movimiento cuando el camino está despejado (> 45 cm)
+- **Estado de emergencia:** El sistema bloquea todos los comandos excepto STOP mientras está activo
 
 ### Interfaz Web
 - **Streaming de video en vivo:** Visualización en tiempo real de la cámara con detecciones superpuestas
@@ -46,6 +48,7 @@ El sistema procesa el video de la cámara del robot, detecta señales de tráfic
 - **Historial de detecciones:** Registro de las últimas 6 señales detectadas
 - **Control manual:** Botones para iniciar/detener la autoconducción
 - **Indicadores de estado:** Banner de emergencia y estado del control en tiempo real
+- **Configuración de stream:** Parámetros ajustables de FPS, calidad JPEG y resolución
 - **Diseño responsive:** Interfaz moderna y adaptable a diferentes tamaños de pantalla
 
 ## Tecnologías Utilizadas
@@ -162,7 +165,7 @@ http://[IP_DE_LA_RASPBERRY_PI]:8000
 ## Estructura del Proyecto
 
 ```
-TESIS/
+Mark_final/
 ├── app.py                 # Aplicación Flask principal
 ├── best-fp16.tflite      # Modelo TensorFlow Lite (debe estar presente)
 ├── templates/
@@ -174,9 +177,10 @@ TESIS/
 
 ### Parámetros de Detección
 ```python
-CONF_THRESH = 0.45        # Umbral de confianza mínimo
-IOU_THRESH = 0.45         # Umbral para Non-Maximum Suppression
+CONF_THRESH = 0.45        # Umbral de confianza mínimo (general)
+CONF_THRESH_LEFT = 0.30   # Umbral más bajo para GIRO IZQUIERDA
 INPUT_W, INPUT_H = 320    # Tamaño de entrada del modelo
+DETECT_EVERY_N = 1        # Detectar en 1 de cada N frames (reduce carga CPU)
 ```
 
 ### Parámetros de Velocidad
@@ -186,21 +190,31 @@ SPEED_SLOW = 10           # ~10 km/h
 SPEED_30 = 20             # ~30 km/h
 SPEED_NORMAL = 30         # Velocidad normal
 SPEED_MAX = 40            # Límite máximo
+TURN_SPEED = 20           # Velocidad durante giros (más lento = giro más preciso)
 ```
 
 ### Parámetros de Seguridad
 ```python
 OBSTACLE_STOP_DISTANCE = 25.0    # Distancia para frenado de emergencia (cm)
-OBSTACLE_SLOW_DISTANCE = 40.0    # Distancia para reducir velocidad (cm)
 CLEAR_DISTANCE = 45.0            # Distancia para liberar emergencia (cm)
-YIELD_SAFE_DISTANCE = 25.0       # Distancia segura para ceda el paso (cm)
 ```
 
 ### Parámetros de Giro
 ```python
-TURN_ANGLE = 25          # Ángulo de giro normal (grados)
-UTURN_ANGLE = 35         # Ángulo de giro para retorno en U (grados)
-UTURN_TIME = 0.9         # Tiempo de giro para retorno (segundos)
+TURN_ANGLE_DEG = 30      # Ángulo del servo para giros de 90° (grados)
+TURN_TIME_90_I = 1.8     # Duración del giro izquierda para ~90° (segundos)
+TURN_TIME_90_D = 1.2     # Duración del giro derecha para ~90° (segundos)
+UTURN_ANGLE_DEG = 30     # Ángulo del servo para vuelta en U (grados)
+UTURN_TIME_180 = 2.5     # Duración del giro para ~180° (segundos)
+COMMAND_COOLDOWN = 3.0   # Segundos: evita encadenar comandos muy seguidos
+```
+
+### Parámetros de Stream (Configurables vía API)
+```python
+TARGET_FPS = 12.0         # FPS objetivo del stream de video
+STREAM_WIDTH = 320        # Ancho del stream (píxeles)
+STREAM_HEIGHT = 240       # Alto del stream (píxeles)
+JPEG_QUALITY = 30         # Calidad JPEG (10-95, menor = más compresión)
 ```
 
 ## Modo Simulación
@@ -214,20 +228,25 @@ El sistema puede funcionar en modo simulación si no se detecta el hardware PiCa
 
 - `GET /` - Interfaz web principal
 - `GET /video_feed` - Stream de video MJPEG en tiempo real
+- `GET /snapshot` - Captura una imagen instantánea del frame actual
 - `GET /last_detection` - Obtiene la última detección en formato JSON
+- `GET /config` - Obtiene la configuración actual del stream (FPS, calidad, resolución)
+- `POST /config` - Actualiza la configuración del stream
 - `POST /control/start` - Activa la autoconducción
 - `POST /control/stop` - Detiene el robot y desactiva autoconducción
 
 ## Funcionamiento Técnico
 
-1. **Captura de video:** El sistema captura frames de la cámara (Picamera2 o OpenCV)
-2. **Preprocesamiento:** Cada frame se redimensiona a 320x320 y normaliza
-3. **Inferencia:** El modelo TFLite procesa el frame y genera detecciones
-4. **Post-procesamiento:** Se aplica Non-Maximum Suppression (NMS) para filtrar detecciones
-5. **Selección:** Se elige la detección con mayor confianza (excluyendo fondo)
-6. **Acción:** Se ejecuta la acción correspondiente en el robot
-7. **Seguridad:** Se verifica la distancia de obstáculos en cada frame
-8. **Actualización:** La interfaz web se actualiza con la información más reciente
+1. **Captura de video:** El sistema captura frames de la cámara (Picamera2 o OpenCV) en un hilo dedicado
+2. **Preprocesamiento:** Cada frame se redimensiona a 320x320 y normaliza (valores 0-1)
+3. **Inferencia:** El modelo TFLite procesa el frame y genera detecciones (puede procesar 1 de cada N frames según `DETECT_EVERY_N`)
+4. **Filtrado por umbral:** Se aplican umbrales de confianza específicos por clase (general 0.45, giro izquierda 0.30)
+5. **Selección inteligente:** Se elige la detección con mayor confianza (excluyendo fondo), con bonus para giro izquierda
+6. **Cola de comandos:** Las acciones se encolan en un sistema de cola thread-safe
+7. **Ejecución de comandos:** Un hilo de control dedicado ejecuta los comandos de forma ordenada
+8. **Seguridad:** Se verifica la distancia de obstáculos en cada frame del hilo de detección
+9. **Streaming:** Los frames procesados se codifican en JPEG y se transmiten vía MJPEG
+10. **Actualización:** La interfaz web se actualiza con la información más reciente mediante polling AJAX
 
 ##  Notas de Seguridad
 
